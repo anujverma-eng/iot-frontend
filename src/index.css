@@ -7,3 +7,6 @@
 @tailwind utilities;
 
 html { scroll-behavior: smooth; }
+
+/* .link { @apply text-brand-600 hover:underline; }
+.btn-primary { @apply px-4 py-2 rounded-lg bg-brand-600 text-white hover:bg-brand-800 shadow-card; } */

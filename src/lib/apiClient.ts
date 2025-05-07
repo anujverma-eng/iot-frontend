@@ -1,13 +1,13 @@
 import axios, { AxiosError } from 'axios';
 import { tokenManager } from '../utils/tokenManager';
 
-const api = axios.create({
+const apiClient = axios.create({
   baseURL: import.meta.env.VITE_API_BASE,
   timeout: 15_000,
 });
 
 /* ---------- request: attach JWT ---------- */
-api.interceptors.request.use((config) => {
+apiClient.interceptors.request.use((config) => {
   const tokens = tokenManager.load();
   if (tokens?.accessToken) {
     config.headers.Authorization = `Bearer ${tokens.accessToken}`;
@@ -18,7 +18,7 @@ api.interceptors.request.use((config) => {
 /* ---------- response: 401 handler ---------- */
 let refreshPromise: Promise<string> | null = null;
 
-api.interceptors.response.use(
+apiClient.interceptors.response.use(
   (res) => res,
   async (err: AxiosError) => {
     if (err.response?.status !== 401) throw err;
@@ -35,11 +35,11 @@ api.interceptors.response.use(
     const cfg = err.config!;
     cfg.headers = new axios.AxiosHeaders(cfg.headers);
     cfg.headers.set('Authorization', `Bearer ${newAccess}`);
-    return api(cfg);
+    return apiClient(cfg);
   },
 );
 
-export default api;
+export default apiClient;
 
 /* ---------- helper: refresh with Cognito ---------- */
 async function refreshAccessToken(): Promise<string> {

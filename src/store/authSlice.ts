@@ -1,6 +1,6 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import { createVerifier, toChallenge } from '../lib/pkce';
-import api from '../lib/api';
+import apiClient from '../lib/apiClient';
 import { tokenManager } from '../utils/tokenManager';
 
 interface AuthState {
@@ -43,7 +43,7 @@ export const handleCallback = createAsyncThunk(
       code_verifier: verifier,
     });
     const url = `${import.meta.env.VITE_COGNITO_DOMAIN}/oauth2/token`;
-    const res = await api.post(url, body, {
+    const res = await apiClient.post(url, body, {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     });
 
