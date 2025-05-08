@@ -1,99 +1,99 @@
-import axios, { AxiosError } from 'axios';
-import { tokenManager } from '../utils/tokenManager';
+// src/lib/apiClient.ts
+import axios, { AxiosError, type AxiosInstance } from "axios";
+import { tokenManager } from "../utils/tokenManager";
+import { AuthClient } from "./auth/cognitoClient";
+import { v4 as uuid } from "uuid";
 
-declare module 'axios' {
+declare module "axios" {
   interface InternalAxiosRequestConfig {
     _retry?: boolean;
   }
 }
 
-const apiClient = axios.create({
+/* ---------- instance ---------- */
+const apiClient: AxiosInstance = axios.create({
   baseURL: import.meta.env.VITE_API_BASE,
-  timeout: 15_000,
+  timeout: 10_000,
+  headers: { "Content-Type": "application/json" },
 });
 
-/* ---------- request: attach JWT ---------- */
-apiClient.interceptors.request.use((config) => {
-  const tokens = tokenManager.load();
-  if (tokens?.accessToken) {
-    config.headers.Authorization = `Bearer ${tokens.accessToken}`;
-  }
-  return config;
+/* ---------- request: add JWT & trace‑id ---------- */
+apiClient.interceptors.request.use((cfg) => {
+  const t = tokenManager.load();
+  if (t?.accessToken) cfg.headers.Authorization = `Bearer ${t.accessToken}`;
+  cfg.headers["X-Request-ID"] = uuid(); // 👈 helpful in logs
+  return cfg;
 });
 
-/* ---------- response: 401 handler ---------- */
+/* ---------- response: 401 queue & refresh ---------- */
 let isRefreshing = false;
-let queue: Array<(tok: string) => void> = [];
-
-const runQueue = (token?: string) => {
-  queue.forEach(cb => cb(token ?? ''));
-  queue = [];
-};
+let queue: Array<(token: string) => void> = [];
 
 apiClient.interceptors.response.use(
   (res) => res,
   async (err: AxiosError) => {
-    if (err.response?.status !== 401) return Promise.reject(err);
-
-    const orig = err.config!;
-    if (orig._retry) return Promise.reject(err);
-    orig._retry = true;
-
-    if (isRefreshing) {
-      return new Promise((resolve) => {
-        queue.push((tok) => {
-          orig.headers = new axios.AxiosHeaders(orig.headers);
-          orig.headers.set('Authorization', `Bearer ${tok}`);
-          resolve(apiClient(orig));
-        });
-      });
+    const original = err.config!;
+    if (err.response?.status !== 401 || original._retry) {
+      return Promise.reject(err);
     }
 
+    /* mark so we don’t loop */
+    original._retry = true;
+
+    /* already refreshing → push request into queue */
+    if (isRefreshing) {
+      return new Promise((res) =>
+        queue.push((token) => {
+          original.headers!.Authorization = `Bearer ${token}`;
+          res(apiClient(original));
+        })
+      );
+    }
+
+    /* start a refresh cycle */
     isRefreshing = true;
     try {
-      const newTok = await refreshAccessToken();
-      apiClient.defaults.headers.common['Authorization'] = `Bearer ${newTok}`;
-      runQueue(newTok);
-      return apiClient(orig);
-    } catch (e) {
-      runQueue();
+      const token = await refreshAccessToken(); // 👈 fixed helper (below)
+
+      /* update default header so new calls use fresh token */
+      apiClient.defaults.headers.common.Authorization = `Bearer ${token}`;
+
+      /* flush queued calls */
+      queue.forEach((fn) => fn(token));
+      queue = [];
+
+      /* retry the original request */
+      original.headers!.Authorization = `Bearer ${token}`;
+      return apiClient(original);
+    } catch (refreshErr) {
+      /* refresh failed → sign‑out hard */
       tokenManager.clear();
-      window.location.href = '/login';
-      return Promise.reject(e);
+      window.location.assign("/login");
+      return Promise.reject(refreshErr);
     } finally {
       isRefreshing = false;
     }
-  },
+  }
 );
 
 export default apiClient;
 
-/* ---------- helper: refresh with Cognito ---------- */
+/* -----------------------------------------------------------------------
+   helper – silent refresh via amazon‑cognito‑identity‑js
+   -------------------------------------------------------------------- */
 async function refreshAccessToken(): Promise<string> {
   const tokens = tokenManager.load();
-  if (!tokens) {
-    tokenManager.clear();
-    window.location.assign('/login');
-    throw new Error('No refresh token');
-  }
+  if (!tokens) throw new Error("No refresh token in storage");
 
-  const form = new URLSearchParams({
-    grant_type   : 'refresh_token',
-    client_id    : import.meta.env.VITE_COGNITO_APP_CLIENT_ID,
-    refresh_token: tokens.refreshToken,
-  });
+  // ask Cognito for a fresh access JWT
+  const newAccess = await AuthClient.refresh(tokens.refreshToken);
 
-  const url = `${import.meta.env.VITE_COGNITO_DOMAIN}/oauth2/token`;
-  const res = await axios.post(url, form, {
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-  });
-
-  /* Cognito returns new access + id tokens (optionally refresh) */
-  const { access_token, refresh_token, expires_in } = res.data;
+  /* Cognito does NOT rotate the refresh token by default.
+     We therefore keep the existing refreshToken in storage. */
   const updated = {
-    accessToken : access_token,
-    refreshToken: refresh_token || tokens.refreshToken,
-    expiresAt   : Math.floor(Date.now() / 1000) + expires_in,
+    accessToken: newAccess,
+    refreshToken: tokens.refreshToken,
+    expiresAt: Math.floor(Date.now() / 1000) + 3600, // 1 h from now
   };
   tokenManager.save(updated);
   return updated.accessToken;

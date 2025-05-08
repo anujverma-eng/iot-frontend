@@ -1,42 +1,40 @@
-// src/lib/tokenManager.ts
-const ACCESS = 'iot.accessToken';
-const REFRESH = 'iot.refreshToken';
-const EXPIRES = 'iot.expiresAt';  // epoch seconds
+import { encrypt, decrypt } from '../lib/crypto';
 
-const store = sessionStorage;   // 🚨 switch from localStorage
+const STORAGE_KEY = 'iot.secureTokens';
 
-export type Tokens = { accessToken: string; refreshToken: string; expiresAt: number };
+export interface Tokens {
+  accessToken : string;
+  refreshToken: string;
+  expiresAt   : number;     // epoch seconds
+}
+
+const store = sessionStorage;          // still session‑scoped 🔐
 
 export const tokenManager = {
   load(): Tokens | null {
-    const at  = store.getItem(ACCESS);
-    const rt  = store.getItem(REFRESH);
-    const exp = store.getItem(EXPIRES);
-    if (!at || !rt || !exp) return null;
-    return { accessToken: at, refreshToken: rt, expiresAt: Number(exp) };
+    const blob = store.getItem(STORAGE_KEY);
+    if (!blob) return null;
+
+    try {
+      return JSON.parse(decrypt(blob)) as Tokens;
+    } catch {
+      // corrupt / key changed → wipe
+      store.removeItem(STORAGE_KEY);
+      return null;
+    }
   },
-  save(t: Tokens) {
-    store.setItem(ACCESS , t.accessToken);
-    store.setItem(REFRESH, t.refreshToken);
-    store.setItem(EXPIRES, String(t.expiresAt));
+
+  save(tokens: Tokens) {
+    store.setItem(STORAGE_KEY, encrypt(JSON.stringify(tokens)));
   },
+
   clear() {
-    store.removeItem(ACCESS);
-    store.removeItem(REFRESH);
-    store.removeItem(EXPIRES);
+    store.removeItem(STORAGE_KEY);
   },
-  /** true if token will expire within the next minute */
+
+  /** true if the access token will expire within 60s */
   needsRefresh(): boolean {
-    const exp = Number(store.getItem(EXPIRES) || 0);
-    return Date.now() / 1000 > exp - 60;
-  },
-  /* optional: hit Cognito global‑logout end‑point */
-  cognitoLogout() {
-    const p = new URLSearchParams({
-      client_id : import.meta.env.VITE_COGNITO_APP_CLIENT_ID,
-      logout_uri: import.meta.env.VITE_COGNITO_LOGOUT_URI,
-    });
-    window.location.href =
-      `${import.meta.env.VITE_COGNITO_DOMAIN}/logout?${p}`;
+    const t = this.load();
+    return t ? Date.now() / 1000 > t.expiresAt - 60 : false;
   },
 };

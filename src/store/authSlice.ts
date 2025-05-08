@@ -1,80 +1,102 @@
-import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
-import { createVerifier, toChallenge } from '../lib/pkce';
-import apiClient from '../lib/apiClient';
-import { tokenManager } from '../utils/tokenManager';
+// src/store/authSlice.ts
+import { createSlice, createAsyncThunk } from "@reduxjs/toolkit";
+import { tokenManager } from "../utils/tokenManager";
+import { AuthClient } from "../lib/auth/cognitoClient";
+
+type Status = 'idle' | 'loading' | 'auth' | 'guest' | 'error';
 
 interface AuthState {
-  status: 'idle'|'loading'|'auth'|'error';
+  status:Status
   user: { email: string } | null;
+  pendingEmail: string | null;
+  error: string | null;
 }
-const initial: AuthState = { status:'idle', user:null };
+const initial: AuthState = { status: "idle", user: null, pendingEmail: null, error: null };
 
 /* ---------- Thunks ---------- */
-export const startLogin = createAsyncThunk(
-  'auth/startLogin',
-  async () => {
-    const verifier  = createVerifier();
-    const challenge = await toChallenge(verifier);
-    sessionStorage.setItem('pkce.v', verifier);   // temp cache
+export const login = createAsyncThunk("auth/login", async (form: { email: string; password: string }) => {
+  return AuthClient.signIn(form.email, form.password);
+});
 
-    const params = new URLSearchParams({
-      client_id : import.meta.env.VITE_COGNITO_APP_CLIENT_ID,
-      response_type: 'code',
-      scope: 'openid email profile',
-      redirect_uri: import.meta.env.VITE_COGNITO_REDIRECT_URI,
-      code_challenge_method: 'S256',
-      code_challenge: challenge,
-    });
-    window.location.assign(
-      `${import.meta.env.VITE_COGNITO_DOMAIN}/oauth2/authorize?${params}`,
-    );
-  },
-);
+export const register = createAsyncThunk("auth/register", async (form: { email: string; password: string }) => {
+  await AuthClient.signUp(form.email, form.password);
+  return form.email; // stash for confirm page
+});
 
-export const handleCallback = createAsyncThunk(
-  'auth/handleCallback',
-  async (authCode: string) => {
-    const verifier = sessionStorage.getItem('pkce.v')!;
-    const body = new URLSearchParams({
-      grant_type   : 'authorization_code',
-      client_id    : import.meta.env.VITE_COGNITO_APP_CLIENT_ID,
-      redirect_uri : import.meta.env.VITE_COGNITO_REDIRECT_URI,
-      code         : authCode,
-      code_verifier: verifier,
-    });
-    const url = `${import.meta.env.VITE_COGNITO_DOMAIN}/oauth2/token`;
-    const res = await apiClient.post(url, body, {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    });
+export const confirmRegister = createAsyncThunk("auth/confirmRegister", async (p: { email: string; code: string }) => {
+  await AuthClient.confirmSignUp(p.email, p.code);
+});
 
-    const { access_token, refresh_token, expires_in, id_token } = res.data;
-    tokenManager.save({
-      accessToken : access_token,
-      refreshToken: refresh_token,
-      expiresAt   : Math.floor(Date.now()/1000)+expires_in,
-    });
+export const forgotPw = createAsyncThunk("auth/forgotPw", async (email: string) => {
+  await AuthClient.forgotPassword(email);
+  return email;
+});
 
-    /* decode id_token for basic user info */
-    const [, payload] = id_token.split('.');
-    const user = JSON.parse(atob(payload));
-    return { email: user.email } as AuthState['user'];
-  },
-);
+export const resetPw = createAsyncThunk("auth/resetPw", async (p: { email: string; code: string; newPw: string }) => {
+  await AuthClient.confirmForgot(p.email, p.code, p.newPw);
+});
 
-export const logout = createAsyncThunk('auth/logout', async () => {
+export const logout = createAsyncThunk("auth/logout", async () => {
   tokenManager.clear();
-  window.location.assign('/login');
+  window.location.assign("/login");
 });
 
 /* ---------- Slice ---------- */
 const slice = createSlice({
-  name: 'auth',
+  name: "auth",
   initialState: initial,
   reducers: {},
-  extraReducers: (b) => {
-    b.addCase(handleCallback.pending,  (s)=>{s.status='loading';});
-    b.addCase(handleCallback.fulfilled,(s,a)=>{s.status='auth';s.user=a.payload;});
-    b.addCase(handleCallback.rejected, (s)=>{s.status='error';});
+  extraReducers: (builder) => {
+    /* ── login flow ─────────────────────────────────────────────── */
+    builder.addCase(login.pending, (s) => {
+      s.status = "loading";
+      s.error = null;
+    });
+    builder.addCase(login.fulfilled, (s, a) => {
+      s.status = "auth";
+      s.user = { email: a.payload.id };
+      tokenManager.save({
+        accessToken: a.payload.access,
+        refreshToken: a.payload.refresh,
+        expiresAt: a.payload.exp,
+      });
+    });
+    builder.addCase(login.rejected, (s, a) => {
+      s.status = "error";
+      s.error = a.error?.message ?? "Login failed";
+    });
+
+    /* ── register (keep as you had) ─────────────────────────────── */
+    builder.addCase(register.fulfilled, (s, a) => {
+      s.pendingEmail = a.payload;
+    });
+
+    /* ── start‑up session probe ─────────────────────────────────── */
+    builder.addCase(initSession.pending, (s) => {
+      s.status = "loading";
+    });
+    builder.addCase(initSession.fulfilled, (s, a) => {
+      s.status = "auth";
+      s.user = a.payload;
+    });
+    builder.addCase(initSession.rejected, (s, action) => {
+      /* Nothing in storage or session is invalid → treat as logged‑out */
+      s.status = "guest"; // user is NOT authenticated
+      s.error = action.error.message ?? null;
+    });
   },
 });
 export default slice.reducer;
+
+export const initSession = createAsyncThunk("auth/initSession", async () => {
+  const sess = await AuthClient.validateSession();
+  if (!sess) throw new Error("NO_SESSION");
+
+  tokenManager.save({
+    accessToken: sess.access,
+    refreshToken: sess.refresh,
+    expiresAt: sess.exp,
+  });
+
+  return { email: sess.email };
+});
