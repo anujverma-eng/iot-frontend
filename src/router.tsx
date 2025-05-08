@@ -1,14 +1,16 @@
-import { Routes, Route, BrowserRouter } from 'react-router-dom';
-import LoginPage from './pages/LoginPage';
-import Callback from './pages/AuthCallback';
-import PublicRoute from './routes/PublicRoute';
-import RegisterPage from './pages/RegisterPage';
-import ForgotPasswordPage from './pages/ForgotPasswordPage';
-import ResetPasswordPage from './pages/ResetPasswordPage';
-import PrivateRoute from './routes/PrivateRoute';
-import Dashboard from './pages/Dashboard';
-import Logout from './pages/Logout';
-import NotFound from './pages/NotFound';
+import { Routes, Route, BrowserRouter } from "react-router-dom";
+import LoginPage from "./pages/LoginPage";
+import Callback from "./pages/AuthCallback";
+import PublicRoute from "./routes/PublicRoute";
+import RegisterPage from "./pages/RegisterPage";
+import ForgotPasswordPage from "./pages/ForgotPasswordPage";
+import ResetPasswordPage from "./pages/ResetPasswordPage";
+import PrivateRoute from "./routes/PrivateRoute";
+import Dashboard from "./pages/Dashboard";
+import Logout from "./pages/Logout";
+import NotFound from "./pages/NotFound";
+import { RoleProtectedRoute } from "./routes/RoleProtectedRoute";
+import { UserRole } from "./types/User";
 
 export function AppRouter() {
   return (
@@ -25,6 +27,14 @@ export function AppRouter() {
         <Route element={<PrivateRoute />}>
           <Route path="/" element={<Dashboard />} />
           <Route path="/logout" element={<Logout />} />
+          <Route
+            path="/admin"
+            element={
+              <RoleProtectedRoute roles={[UserRole.OWNER, UserRole.ADMIN]}>
+                <Dashboard />
+              </RoleProtectedRoute>
+            }
+          />
         </Route>
 
         <Route path="*" element={<NotFound />} />

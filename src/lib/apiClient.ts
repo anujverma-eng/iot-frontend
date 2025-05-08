@@ -1,6 +1,12 @@
 import axios, { AxiosError } from 'axios';
 import { tokenManager } from '../utils/tokenManager';
 
+declare module 'axios' {
+  interface InternalAxiosRequestConfig {
+    _retry?: boolean;
+  }
+}
+
 const apiClient = axios.create({
   baseURL: import.meta.env.VITE_API_BASE,
   timeout: 15_000,
@@ -16,26 +22,47 @@ apiClient.interceptors.request.use((config) => {
 });
 
 /* ---------- response: 401 handler ---------- */
-let refreshPromise: Promise<string> | null = null;
+let isRefreshing = false;
+let queue: Array<(tok: string) => void> = [];
+
+const runQueue = (token?: string) => {
+  queue.forEach(cb => cb(token ?? ''));
+  queue = [];
+};
 
 apiClient.interceptors.response.use(
   (res) => res,
   async (err: AxiosError) => {
-    if (err.response?.status !== 401) throw err;
+    if (err.response?.status !== 401) return Promise.reject(err);
 
-    /* avoid parallel refreshes */
-    if (!refreshPromise) {
-      refreshPromise = refreshAccessToken().finally(() => {
-        refreshPromise = null;
+    const orig = err.config!;
+    if (orig._retry) return Promise.reject(err);
+    orig._retry = true;
+
+    if (isRefreshing) {
+      return new Promise((resolve) => {
+        queue.push((tok) => {
+          orig.headers = new axios.AxiosHeaders(orig.headers);
+          orig.headers.set('Authorization', `Bearer ${tok}`);
+          resolve(apiClient(orig));
+        });
       });
     }
 
-    const newAccess = await refreshPromise;
-    // retry original call with new token
-    const cfg = err.config!;
-    cfg.headers = new axios.AxiosHeaders(cfg.headers);
-    cfg.headers.set('Authorization', `Bearer ${newAccess}`);
-    return apiClient(cfg);
+    isRefreshing = true;
+    try {
+      const newTok = await refreshAccessToken();
+      apiClient.defaults.headers.common['Authorization'] = `Bearer ${newTok}`;
+      runQueue(newTok);
+      return apiClient(orig);
+    } catch (e) {
+      runQueue();
+      tokenManager.clear();
+      window.location.href = '/login';
+      return Promise.reject(e);
+    } finally {
+      isRefreshing = false;
+    }
   },
 );
 

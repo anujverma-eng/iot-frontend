@@ -1,12 +1,74 @@
+/* src/index.css */
 @config "../tailwind.config.js";
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300..700&family=Space+Grotesk:wght@500;700&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-html { scroll-behavior: smooth; }
+/* Custom Base Styles */
+@layer base {
+  :root {
+    --color-primary: 31, 105, 255;
+    --color-surface: 33, 37, 41;
+  }
 
-/* .link { @apply text-brand-600 hover:underline; }
-.btn-primary { @apply px-4 py-2 rounded-lg bg-brand-600 text-white hover:bg-brand-800 shadow-card; } */
+  html {
+    @apply h-full scroll-smooth;
+  }
+
+  body {
+    @apply h-full bg-surface-100 dark:bg-surface-900 text-surface-900 dark:text-surface-100 font-sans antialiased;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-heading tracking-tight;
+  }
+
+  /* Smooth color transitions */
+  * {
+    @apply transition-colors duration-200;
+  }
+}
+
+/* Custom Components */
+@layer components {
+  .dashboard-card {
+    @apply bg-white dark:bg-surface-800 rounded-xl p-6 shadow-depth-1 hover:shadow-depth-2 transition-shadow;
+  }
+
+  .data-widget {
+    @apply dashboard-card p-4 bg-gradient-to-br from-primary-700/10 to-primary-400/5;
+  }
+
+  .nav-link {
+    @apply flex items-center px-4 py-3 text-sm rounded-lg hover:bg-surface-200/50 dark:hover:bg-surface-700 transition-colors;
+  }
+
+  .sensor-status {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+  }
+}
+
+/* Custom Utilities */
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: theme('colors.primary.600') transparent;
+  }
+}
+
+/* Animations */
+@keyframes gauge-progress {
+  from { stroke-dashoffset: 100; }
+  to { stroke-dashoffset: 0; }
+}
+
+.animate-gauge {
+  animation: gauge-progress 1.5s ease-out forwards;
+}
