@@ -1,5 +1,5 @@
 // src/lib/apiClient.ts
-import axios, { AxiosError, type AxiosInstance } from "axios";
+import axios, { AxiosError, type AxiosInstance, type CancelTokenSource } from "axios";
 import { tokenManager } from "../utils/tokenManager";
 import { AuthClient } from "./auth/cognitoClient";
 import { v4 as uuid } from "uuid";
@@ -25,76 +25,72 @@ apiClient.interceptors.request.use((cfg) => {
   return cfg;
 });
 
-/* ---------- response: 401 queue & refresh ---------- */
-let isRefreshing = false;
-let queue: Array<(token: string) => void> = [];
+/* ------------------------------------------------------------------ */
+/* 3)  response interceptor – single refresh queue                    */
+/* ------------------------------------------------------------------ */
+let ongoingRefresh: Promise<string> | null = null;
 
 apiClient.interceptors.response.use(
   (res) => res,
   async (err: AxiosError) => {
+    /* if it's not 401 → bubble up */
+    if (err.response?.status !== 401) throw err;
+
     const original = err.config!;
-    if (err.response?.status !== 401 || original._retry) {
-      return Promise.reject(err);
+    if ((original)._retry) throw err;           // already retried once
+
+    /* ----- start (or join) a refresh cycle ----- */
+    if (!ongoingRefresh) {
+      ongoingRefresh = silentRefresh().finally(() => { ongoingRefresh = null; });
     }
 
-    /* mark so we don’t loop */
-    original._retry = true;
+    const newAccess = await ongoingRefresh;
 
-    /* already refreshing → push request into queue */
-    if (isRefreshing) {
-      return new Promise((res) =>
-        queue.push((token) => {
-          original.headers!.Authorization = `Bearer ${token}`;
-          res(apiClient(original));
-        })
-      );
-    }
+    /* mark so we don't recurse forever */
+    (original)._retry = true;
+    original.headers.set('Authorization', `Bearer ${newAccess}`);
 
-    /* start a refresh cycle */
-    isRefreshing = true;
-    try {
-      const token = await refreshAccessToken(); // 👈 fixed helper (below)
+    /* IMPORTANT: update defaults so subsequent NEW calls are fresh */
+    apiClient.defaults.headers.common.Authorization = `Bearer ${newAccess}`;
 
-      /* update default header so new calls use fresh token */
-      apiClient.defaults.headers.common.Authorization = `Bearer ${token}`;
-
-      /* flush queued calls */
-      queue.forEach((fn) => fn(token));
-      queue = [];
-
-      /* retry the original request */
-      original.headers!.Authorization = `Bearer ${token}`;
-      return apiClient(original);
-    } catch (refreshErr) {
-      /* refresh failed → sign‑out hard */
-      tokenManager.clear();
-      window.location.assign("/login");
-      return Promise.reject(refreshErr);
-    } finally {
-      isRefreshing = false;
-    }
-  }
+    return apiClient(original);
+  },
 );
 
-export default apiClient;
+/* helper – ask Cognito for a fresh access JWT */
+async function silentRefresh(): Promise<string> {
+  const saved = tokenManager.load();
+  if (!saved) throw new Error('No refresh token – user not logged‑in');
 
-/* -----------------------------------------------------------------------
-   helper – silent refresh via amazon‑cognito‑identity‑js
-   -------------------------------------------------------------------- */
-async function refreshAccessToken(): Promise<string> {
-  const tokens = tokenManager.load();
-  if (!tokens) throw new Error("No refresh token in storage");
+  const access = await AuthClient.refresh(saved.refreshToken);
 
-  // ask Cognito for a fresh access JWT
-  const newAccess = await AuthClient.refresh(tokens.refreshToken);
-
-  /* Cognito does NOT rotate the refresh token by default.
-     We therefore keep the existing refreshToken in storage. */
-  const updated = {
-    accessToken: newAccess,
-    refreshToken: tokens.refreshToken,
-    expiresAt: Math.floor(Date.now() / 1000) + 3600, // 1 h from now
-  };
-  tokenManager.save(updated);
-  return updated.accessToken;
+  tokenManager.save({
+    accessToken : access,
+    refreshToken: saved.refreshToken, // Cognito keeps same RT
+    expiresAt   : Math.floor(Date.now() / 1000) + 3600,
+  });
+  return access;
 }
+
+/* ------------------------------------------------------------------ */
+/* 4)  cancellation support                                           */
+/* ------------------------------------------------------------------ */
+/** holds the single CancelTokenSource currently linked to requests */
+let currentSource: CancelTokenSource | null = null;
+
+/** attach a fresh cancel‑token to every request */
+apiClient.interceptors.request.use((cfg) => {
+  /* if we don't have a source OR it has been cancelled → make new */
+  if (!currentSource || currentSource.token.reason) {
+    currentSource = axios.CancelToken.source();
+  }
+  cfg.cancelToken = currentSource.token;
+  return cfg;
+});
+
+/** call this before route changes/unmounts to abort all in‑flight calls */
+export function cancelPendingRequests(reason = 'Navigation change') {
+  currentSource?.cancel(reason);
+}
+
+export default apiClient;

@@ -2,12 +2,13 @@
 import { createSlice, createAsyncThunk } from "@reduxjs/toolkit";
 import { tokenManager } from "../utils/tokenManager";
 import { AuthClient } from "../lib/auth/cognitoClient";
+import { UserRole } from "../types/User";
 
 type Status = 'idle' | 'loading' | 'auth' | 'guest' | 'error';
 
 interface AuthState {
   status:Status
-  user: { email: string } | null;
+  user: { email: string, role: UserRole } | null;
   pendingEmail: string | null;
   error: string | null;
 }
@@ -41,6 +42,15 @@ export const logout = createAsyncThunk("auth/logout", async () => {
   window.location.assign("/login");
 });
 
+
+/* helper: pull role claim out of a JWT payload */
+const extractRole = (jwt: string): UserRole => {
+  try {
+    const payload = JSON.parse(atob(jwt.split('.')[1]));
+    return (payload['custom:role'] ?? UserRole.OWNER) as UserRole;
+  } catch { return UserRole.OWNER; }
+};
+
 /* ---------- Slice ---------- */
 const slice = createSlice({
   name: "auth",
@@ -54,7 +64,10 @@ const slice = createSlice({
     });
     builder.addCase(login.fulfilled, (s, a) => {
       s.status = "auth";
-      s.user = { email: a.payload.id };
+      s.user = {
+        email: a.payload.id ?? a.meta.arg.email,
+        role: extractRole(a.payload.id),
+      };
       tokenManager.save({
         accessToken: a.payload.access,
         refreshToken: a.payload.refresh,
@@ -77,7 +90,10 @@ const slice = createSlice({
     });
     builder.addCase(initSession.fulfilled, (s, a) => {
       s.status = "auth";
-      s.user = a.payload;
+      s.user   = {
+        email: a.payload.email,
+        role : extractRole(a.payload.id),
+      };
     });
     builder.addCase(initSession.rejected, (s, action) => {
       /* Nothing in storage or session is invalid → treat as logged‑out */
@@ -98,5 +114,5 @@ export const initSession = createAsyncThunk("auth/initSession", async () => {
     expiresAt: sess.exp,
   });
 
-  return { email: sess.email };
+  return { email: sess.email, id: sess.id }; 
 });
